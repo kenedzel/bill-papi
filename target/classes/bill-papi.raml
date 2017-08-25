@@ -1,0 +1,22 @@
+#%RAML 0.8
+title: bill-process
+version: 1.0
+
+/payment/{subscriberAccountNumber}/{billerAccountNumber}:
+  post:
+    description: Payment adapter for system api.
+    queryParameters: 
+      amount:
+        type: number
+      email:
+        type: string
+    responses: 
+      200:
+        body: 
+          application/json:
+      404:
+        body: 
+          application/json:
+      500:
+        body: 
+          application/json:

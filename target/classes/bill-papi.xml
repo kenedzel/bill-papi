@@ -1,0 +1,130 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns:tracking="http://www.mulesoft.org/schema/mule/ee/tracking" xmlns:json="http://www.mulesoft.org/schema/mule/json" xmlns:context="http://www.springframework.org/schema/context"
+	xmlns:http="http://www.mulesoft.org/schema/mule/http" xmlns:apikit="http://www.mulesoft.org/schema/mule/apikit" xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:doc="http://www.mulesoft.org/schema/mule/documentation" xmlns:spring="http://www.springframework.org/schema/beans" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"  xsi:schemaLocation="http://www.springframework.org/schema/context http://www.springframework.org/schema/context/spring-context-current.xsd
+http://www.springframework.org/schema/beans http://www.springframework.org/schema/beans/spring-beans-current.xsd
+http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
+http://www.mulesoft.org/schema/mule/apikit http://www.mulesoft.org/schema/mule/apikit/current/mule-apikit.xsd
+http://www.mulesoft.org/schema/mule/json http://www.mulesoft.org/schema/mule/json/current/mule-json.xsd
+http://www.mulesoft.org/schema/mule/ee/tracking http://www.mulesoft.org/schema/mule/ee/tracking/current/mule-tracking-ee.xsd">
+    <spring:beans>
+        <context:property-placeholder location="classpath:endpoint.properties" order="1" />
+    </spring:beans>
+    <http:listener-config xmlns:http="http://www.mulesoft.org/schema/mule/http" name="bill-papi-httpListenerConfig" host="${config.host}" port="${config.port}" doc:name="HTTP Listener Configuration"/>
+    <apikit:config xmlns:apikit="http://www.mulesoft.org/schema/mule/apikit" name="bill-papi-config" raml="bill-papi.raml" consoleEnabled="false" doc:name="Router"/>
+    <http:request-config name="sapi-config" host="${config.sapi.host}" port="${config.sapi.port}" basePath="${config.sapi.path}" doc:name="HTTP Request Configuration"/>
+    <flow name="bill-papi-main">
+        <http:listener xmlns:http="http://www.mulesoft.org/schema/mule/http" config-ref="bill-papi-httpListenerConfig" path="${config.path}" doc:name="HTTP"/>
+        <set-property propertyName="Content-Type" value="application/json" mimeType="application/json" doc:name="Request as JSON"/>
+        <apikit:router xmlns:apikit="http://www.mulesoft.org/schema/mule/apikit" config-ref="bill-papi-config" doc:name="APIkit Router"/>
+        <exception-strategy ref="BillExceptions" doc:name="Reference Exception Strategy"/>
+    </flow>
+    <flow name="bill-papi-console">
+        <http:listener xmlns:http="http://www.mulesoft.org/schema/mule/http" config-ref="bill-papi-httpListenerConfig" path="/console/*" doc:name="HTTP"/>
+        <apikit:console xmlns:apikit="http://www.mulesoft.org/schema/mule/apikit" config-ref="bill-papi-config" doc:name="APIkit Console"/>
+    </flow>
+    <flow name="post:/payment/{subscriberAccountNumber}/{billerAccountNumber}:bill-papi-config">
+        <flow-ref name="SetVariables" doc:name="SetVariables"/>
+        <flow-ref name="OAuthRequest" doc:name="OAuthRequest"/>
+        <choice doc:name="Choice">
+            <when expression="payload.status == 'rejected'">
+                <set-property propertyName="http.status" value="401" doc:name="Set Status"/>
+                <set-payload value="{
+	&quot;status_code&quot;: &quot;401&quot;,
+	&quot;status_message&quot;: &quot;Unauthorized.&quot;
+}" doc:name="Status Rejected"/>
+            </when>
+            <otherwise>
+                <flow-ref name="SubscriberInquiry" doc:name="SubscriberInquiry"/>
+            </otherwise>
+        </choice>
+    </flow>
+    <sub-flow name="SetVariables">
+		<set-variable variableName="subscriberAccountNumber" value="#[message.inboundProperties.'http.uri.params'.subscriberAccountNumber]" doc:name="Set Subscriber Account Number"/>
+		<set-variable variableName="billerAccountNumber" value="#[message.inboundProperties.'http.uri.params'.billerAccountNumber]" encoding="ISO-8859-6" doc:name="Set Biller Account Number"/>
+		<set-variable variableName="email" value="#[message.inboundProperties.'http.query.params'.email]" doc:name="Set Email"/>
+		<set-variable variableName="amount" value="#[message.inboundProperties.'http.query.params'.amount]" doc:name="Set Amount"/>
+    </sub-flow>
+    <sub-flow name="OAuthRequest">
+        <http:request config-ref="sapi-config" path="${config.sapi.path.oauth}" method="POST" doc:name="Request Token">
+            <http:request-builder>
+                <http:query-param paramName="email" value="#[flowVars.email]"/>
+            </http:request-builder>
+        </http:request>
+        <set-property propertyName="Content-Type" value="application/json" mimeType="application/json" doc:name="Property"/>
+        <logger message="#[payload]" level="INFO" doc:name="Logger"/>
+        <json:json-to-object-transformer returnClass="java.util.HashMap" doc:name="JSON to Object"/>
+        <set-variable variableName="accessToken" value="#[payload.accessToken]" doc:name="Set Access Token"/>
+    </sub-flow>
+    <sub-flow name="SubscriberInquiry">
+        <logger message="#[flowVars.accessToken]" level="INFO" doc:name="Logger"/>
+        <set-property propertyName="Authorization" value="#[flowVars.accessToken]" doc:name="Set Access Token Header"/>
+        <http:request config-ref="sapi-config" path="${config.sapi.path.subscriber.inquiry}" method="GET" doc:name="Subscriber Inquiry">
+            <http:request-builder>
+                <http:uri-param paramName="subscriberAccountNumber" value="#[flowVars.subscriberAccountNumber]"/>
+                <http:uri-param paramName="billerAccountNumber" value="#[flowVars.billerAccountNumber]"/>
+            </http:request-builder>
+        </http:request>
+        <json:json-to-object-transformer returnClass="java.util.HashMap" doc:name="JSON to Object"/>
+        <set-variable variableName="outstandingBalance" value="#[payload.content.outstandingBalance]" doc:name="Set Outstanding Balance"/>
+        <set-payload value="#[payload.content]" doc:name="Set Payload"/>
+        <flow-ref name="Settlement" doc:name="Settlement"/>
+    </sub-flow>
+    <sub-flow name="Settlement">
+        <set-property propertyName="Authorization" value="#[flowVars.accessToken]" doc:name="Set Header"/>
+        <http:request config-ref="sapi-config" path="${config.sapi.path.payment}" method="POST" doc:name="Settle Payment">
+            <http:request-builder>
+                <http:query-param paramName="amount" value="#[flowVars.amount]"/>
+                <http:uri-param paramName="subscriberAccountNumber" value="#[flowVars.subscriberAccountNumber]"/>
+                <http:uri-param paramName="billerAccountNumber" value="#[flowVars.billerAccountNumber]"/>
+            </http:request-builder>
+        </http:request>
+        <json:json-to-object-transformer returnClass="java.util.HashMap" ignoreBadInput="true" doc:name="JSON to Object"/>
+        <set-payload value="{
+	&quot;status_code&quot;: #[payload.status_code],
+	&quot;status_message&quot;: &quot;Payment has been settled.&quot;
+}" doc:name="Set Payload"/>
+        <set-property propertyName="Content-Type" value="appication/json" mimeType="application/json" doc:name="Copy Property"/>
+    </sub-flow>
+    
+    <apikit:mapping-exception-strategy xmlns:apikit="http://www.mulesoft.org/schema/mule/apikit" name="bill-papi-apiKitGlobalExceptionMapping">
+        <apikit:mapping statusCode="404">
+            <apikit:exception value="org.mule.module.apikit.exception.NotFoundException" />
+            <set-property propertyName="Content-Type" value="application/json" doc:name="Property"/>
+            <set-payload value="{ &quot;message&quot;: &quot;Resource not found&quot; }" doc:name="Set Payload"/>
+        </apikit:mapping>
+        <apikit:mapping statusCode="405">
+            <apikit:exception value="org.mule.module.apikit.exception.MethodNotAllowedException" />
+            <set-property propertyName="Content-Type" value="application/json" doc:name="Property"/>
+            <set-payload value="{ &quot;message&quot;: &quot;Method not allowed&quot; }" doc:name="Set Payload"/>
+        </apikit:mapping>
+        <apikit:mapping statusCode="415">
+            <apikit:exception value="org.mule.module.apikit.exception.UnsupportedMediaTypeException" />
+            <set-property propertyName="Content-Type" value="application/json" doc:name="Property"/>
+            <set-payload value="{ &quot;message&quot;: &quot;Unsupported media type&quot; }" doc:name="Set Payload"/>
+        </apikit:mapping>
+        <apikit:mapping statusCode="406">
+            <apikit:exception value="org.mule.module.apikit.exception.NotAcceptableException" />
+            <set-property propertyName="Content-Type" value="application/json" doc:name="Property"/>
+            <set-payload value="{ &quot;message&quot;: &quot;Not acceptable&quot; }" doc:name="Set Payload"/>
+        </apikit:mapping>
+        <apikit:mapping statusCode="400">
+            <apikit:exception value="org.mule.module.apikit.exception.BadRequestException" />
+            <set-property propertyName="Content-Type" value="application/json" doc:name="Property"/>
+            <set-payload value="{ &quot;message&quot;: &quot;Bad request&quot; }" doc:name="Set Payload"/>
+        </apikit:mapping>
+    </apikit:mapping-exception-strategy>
+<choice-exception-strategy name="BillExceptions">
+        <catch-exception-strategy when="#[message.inboundProperties.'http.status' == 404]" doc:name="404">
+            <copy-properties propertyName="*" doc:name="Copy Properties"/>
+            <set-payload value="{
+	&quot;status_code&quot;: &quot;404&quot;,
+	&quot;status_message&quot;: &quot;Not found&quot;
+}" doc:name="Set Payload"/>
+        </catch-exception-strategy>
+        <catch-exception-strategy when="#[message.inboundProperties.'http.status' == 500]" doc:name="500">
+            <copy-properties propertyName="*" doc:name="Copy Properties"/>
+            <set-payload value="{  &quot;status_code&quot;: &quot;500&quot;,  &quot;status_message&quot;: &quot;Internal Server Error&quot; }" doc:name="Set Payload"/>
+        </catch-exception-strategy>
+    </choice-exception-strategy>
+</mule>
